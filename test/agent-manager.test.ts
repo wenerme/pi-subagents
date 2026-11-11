@@ -118,6 +118,41 @@ describe("AgentManager — Bug 1 race condition (resultConsumed vs onComplete)",
     expect(completedRecord!.resultConsumed).toBe(true);
     expect(record).toBe(completedRecord);
   });
+  it("passes ancestor session files to the runner for lane collision checks", async () => {
+    manager = new AgentManager();
+    resolvedRun();
+    const parentId = manager.spawn(mockPi, mockCtx, "general-purpose", "parent", {
+      description: "parent", isBackground: true,
+    });
+    manager.getRecord(parentId)!.sessionFile = "/tmp/ancestor-session.jsonl";
+    const childId = manager.spawn(mockPi, mockCtx, "general-purpose", "child", {
+      description: "child", parentAgentId: parentId,
+    });
+    await manager.getRecord(childId)!.promise;
+    const childOptions = vi.mocked(runAgent).mock.calls.find(call => call[3].agentId === childId)?.[3];
+    expect(childOptions?.reservedSessionFiles).toContain("/tmp/ancestor-session.jsonl");
+  });
+
+  it("does not fall back to a global lane when explicit false is supplied", async () => {
+    manager = new AgentManager();
+    registerAgents(new Map([[
+      "general-purpose",
+      { name: "general-purpose", description: "global", builtinToolNames: [], extensions: false,
+        skills: false, systemPrompt: "global", promptMode: "replace", sessionFile: "/global/lane.jsonl" } as any,
+    ]]));
+    resolvedRun();
+    try {
+      await manager.spawnAndWait(mockPi, mockCtx, "general-purpose", "test", {
+        description: "nested local agent", sessionFileExplicit: false,
+      });
+      expect(vi.mocked(runAgent).mock.calls.at(-1)?.[3]).toMatchObject({
+        sessionFile: undefined,
+        sessionFileExplicit: false,
+      });
+    } finally {
+      registerAgents(new Map());
+    }
+  });
 });
 
 describe("AgentManager — spawnAndWait onSpawned + foreground output file wiring (#105)", () => {

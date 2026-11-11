@@ -201,6 +201,7 @@ function loadOneFile(path: string, agents: Map<string, AgentConfig>, source: Age
     model: str(fm.model),
     thinking: str(fm.thinking) as ThinkingLevel | undefined,
     maxTurns: nonNegativeInt(fm.max_turns),
+    sessionFile: str(fm.session_file),
     persistSession: fm.persist_session != null ? fm.persist_session === true : undefined,
     // No `inherit` here: omitting the key already defers to the setting.
     cacheRetention: fm.cache_retention === "none" || fm.cache_retention === "short" || fm.cache_retention === "long"

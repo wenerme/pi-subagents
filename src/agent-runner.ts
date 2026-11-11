@@ -3,6 +3,7 @@
  */
 
 import { readFileSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import type { Model } from "@earendil-works/pi-ai";
@@ -32,6 +33,7 @@ import { detectEnv } from "./env.js";
 import { buildMemoryBlock, buildReadOnlyMemoryBlock } from "./memory.js";
 import { createNestedSubagentTools, formatChildCompletions, getMaxSubagentDepth, type NestedAgentManager } from "./nested-tools.js";
 import { buildAgentPrompt, inheritableParentPrompt, type PromptExtras } from "./prompts.js";
+import { acquireLane, resolveSessionFile } from "./session-file-lock.js";
 import { preloadSkills } from "./skill-loader.js";
 import { createStructuredCapture, createStructuredOutputTool, structuredRetryPrompt } from "./structured-output.js";
 import type { SubagentType, ThinkingLevel } from "./types.js";
@@ -521,6 +523,14 @@ export interface RunOptions {
    * under the type's *current* definition, not the one the original run used.
    */
   resumeSessionFile?: string;
+  /** Request cwd before worktree isolation; base for an explicit relative sessionFile. */
+  sessionFileCwd?: string;
+  /** Explicit path pinned by the caller, schedule, or agent frontmatter. */
+  sessionFile?: string;
+  /** Persisted explicitness; reopen must not infer this from current frontmatter. */
+  sessionFileExplicit?: boolean;
+  /** Ancestor session files reserved by AgentManager; not exposed to callers. */
+  reservedSessionFiles?: string[];
   /**
    * True when another agent spawned this one. Only top-level agents get a
    * handle, so only they can be reopened by name — which is the whole reason
@@ -867,14 +877,47 @@ function reopenSession(file: string, parentSessionFile: string | undefined, sess
   return SessionManager.forkFrom(file, opened.getCwd(), sessionDir, { parentSession: parentSessionFile });
 }
 
+// Session -> explicit lane file, so a live resume holds the lane lock.
+const sessionLockFiles = new WeakMap<AgentSession, string>();
+
 export async function runAgent(
   ctx: ExtensionContext,
   type: SubagentType,
   prompt: string,
   options: RunOptions,
 ): Promise<RunResult> {
-  const config = getConfig(type);
   const agentConfig = getAgentConfig(type);
+  const explicitPath = options.sessionFileExplicit === false
+    ? undefined
+    : options.sessionFile ?? (options.sessionFileExplicit === true ? options.resumeSessionFile : agentConfig?.sessionFile);
+  if (!explicitPath) return runAgentUnlocked(ctx, type, prompt, options, agentConfig);
+  const requestedCwd = options.sessionFileCwd ?? ctx.cwd;
+  const resolved = await resolveSessionFile(explicitPath, requestedCwd);
+  const callerFiles = [ctx.sessionManager?.getSessionFile?.(), ...(options.reservedSessionFiles ?? [])];
+  for (const callerFile of new Set(callerFiles.filter((file): file is string => file !== undefined))) {
+    const reserved = await resolveSessionFile(callerFile, requestedCwd);
+    // realpath cannot fold case or Unicode aliases for files not yet created; folding here only errs on the side of refusing a lane, without changing its lock key.
+    if (reserved.key === resolved.key || reserved.key.normalize("NFC").toLowerCase() === resolved.key.normalize("NFC").toLowerCase()) {
+      throw new Error(`session_file ${resolved.file} is the session file of the calling agent or one of its parents; use a dedicated lane file`);
+    }
+  }
+  const release = await acquireLane(resolved.file, requestedCwd);
+  try {
+    await mkdir(dirname(resolved.file), { recursive: true });
+    return await runAgentUnlocked(ctx, type, prompt, { ...options, sessionFile: resolved.file }, agentConfig);
+  } finally {
+    await release();
+  }
+}
+
+async function runAgentUnlocked(
+  ctx: ExtensionContext,
+  type: SubagentType,
+  prompt: string,
+  options: RunOptions,
+  agentConfig: ReturnType<typeof getAgentConfig>,
+): Promise<RunResult> {
+  const config = getConfig(type);
 
   // Resolve working directory: worktree override > parent cwd
   const effectiveCwd = options.cwd ?? ctx.cwd;
@@ -1324,12 +1367,15 @@ export async function runAgent(
   // as `outputTranscript`.
   const persistSession = agentConfig?.persistSession ?? (options.nested ? false : rememberAgents);
   const parentSessionFile = ctx.sessionManager?.getSessionFile?.();
-  const sessionManager = options.resumeSessionFile
+  const explicitSessionFile = options.sessionFileExplicit === false
+    ? undefined
+    : options.sessionFile ?? (options.sessionFileExplicit === true ? options.resumeSessionFile : undefined);
+  let sessionManager = options.resumeSessionFile && !explicitSessionFile
     // Reopening an existing conversation: the file already carries its own
     // header (cwd, parent) and history, so none of the create-time options
     // apply. `sessionDir` still matters for a later /new or /branch off it.
     ? reopenSession(options.resumeSessionFile, parentSessionFile, configuredSessionDir ?? defaultSessionDir)
-    : persistSession
+    : persistSession && !explicitSessionFile
       ? SessionManager.create(effectiveCwd, configuredSessionDir ?? defaultSessionDir, {
           // Optional metadata — it only nests the subagent under its spawner in
           // `/resume`. Until `rememberAgents` this ran solely for the rare
@@ -1339,6 +1385,9 @@ export async function runAgent(
           parentSession: parentSessionFile,
         })
       : SessionManager.inMemory(effectiveCwd);
+  if (explicitSessionFile) {
+    sessionManager = SessionManager.open(explicitSessionFile, configuredSessionDir ?? defaultSessionDir, effectiveCwd);
+  }
 
   // Pi 0.80.8 replaced createAgentSession's modelRegistry option with
   // modelRuntime, but ExtensionContext still exposes only the registry facade.
@@ -1371,6 +1420,7 @@ export async function runAgent(
   }
 
   const { session, modelFallbackMessage } = await runInChildSessionContext(() => createAgentSession(sessionOpts));
+  if (explicitSessionFile) sessionLockFiles.set(session, explicitSessionFile);
   // Pi could not use the model the reopened conversation recorded and fell back
   // to its default. Warned the way pi warns at its own session start, and the
   // way an out-of-scope model is warned: to the user, not the model.
@@ -1495,6 +1545,24 @@ export async function runAgent(
  * — and counted from this prompt (#368).
  */
 export async function resumeAgent(
+  session: AgentSession,
+  prompt: string,
+  options: Pick<RunOptions, "maxTurns" | "onTurnEnd" | "onToolActivity" | "onAssistantUsage" | "onCompaction" | "signal"> & {
+    type: SubagentType;
+    children?: ChildDrain;
+  },
+): Promise<{ text: string; failure?: string } & Pick<RunResult, "aborted" | "steered">> {
+  const file = sessionLockFiles.get(session);
+  if (!file) return resumeAgentUnlocked(session, prompt, options);
+  const release = await acquireLane(file, process.cwd());
+  try {
+    return await resumeAgentUnlocked(session, prompt, options);
+  } finally {
+    await release();
+  }
+}
+
+async function resumeAgentUnlocked(
   session: AgentSession,
   prompt: string,
   options: Pick<RunOptions, "maxTurns" | "onTurnEnd" | "onToolActivity" | "onAssistantUsage" | "onCompaction" | "signal"> & {

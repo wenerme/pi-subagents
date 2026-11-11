@@ -60,6 +60,8 @@ interface NestedSpawnOptions {
   thinkingLevel?: ThinkingLevel;
   isBackground?: boolean;
   isolation?: IsolationMode;
+  sessionFile?: string;
+  sessionFileExplicit?: boolean;
   invocation?: AgentInvocation;
   signal?: AbortSignal;
   onAssistantUsage?: (usage: { input: number; output: number; cacheWrite: number }) => void;
@@ -222,6 +224,7 @@ export function createNestedSubagentTools(context: NestedToolContext): ToolDefin
       resume: Type.Optional(Type.String({ description: "Resume a nested agent owned by this parent." })),
       isolated: Type.Optional(Type.Boolean()),
       inherit_context: Type.Optional(Type.Boolean()),
+      session_file: Type.Optional(Type.String()),
       ...isolationParam(isWorktreeIsolationEnabled()),
     }),
     execute: async (_toolCallId, params, signal, _onUpdate, ctx) => {
@@ -303,6 +306,7 @@ export function createNestedSubagentTools(context: NestedToolContext): ToolDefin
       // off the owning parent rather than this child session's own id.
       const rootSessionId = context.manager.getRecord(context.parentAgentId)?.rootSessionId;
       const childDepth = context.depth + 1;
+      const sessionFile = params.session_file ?? config?.sessionFile;
       const options: NestedSpawnOptions = {
         description: params.description,
         model,
@@ -311,6 +315,8 @@ export function createNestedSubagentTools(context: NestedToolContext): ToolDefin
         inheritContext: invocation.inheritContext,
         thinkingLevel: invocation.thinking,
         isolation: invocation.isolation,
+        sessionFile,
+        sessionFileExplicit: sessionFile !== undefined,
         invocation: {
           thinking: invocation.thinking,
           maxTurns: invocation.maxTurns,

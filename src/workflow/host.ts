@@ -196,12 +196,13 @@ export function createWorkflowHost(deps: WorkflowHostOptions): WorkflowHost {
    * Lives exactly as long as the run, like `records`, so memory stays bounded
    * by the run itself; the manager keeps no tombstone for an owned child.
    */
-  const settled = new Map<string, Pick<AgentRecord, "type" | "description" | "sessionFile"> & { worktreeLost: boolean }>();
+  const settled = new Map<string, Pick<AgentRecord, "type" | "description" | "sessionFile" | "sessionFileExplicit"> & { worktreeLost: boolean }>();
   const remember = (record: AgentRecord): void => {
     settled.set(record.id, {
       type: record.type,
       description: record.description,
       sessionFile: record.sessionFile,
+      sessionFileExplicit: record.sessionFileExplicit,
       worktreeLost: worktreeLost(record),
     });
   };
@@ -269,6 +270,7 @@ export function createWorkflowHost(deps: WorkflowHostOptions): WorkflowHost {
         {
           description: kept.description,
           resumeSessionFile: reopen.sessionFile,
+          sessionFileExplicit: kept.sessionFileExplicit === true,
           reclaim: { id },
           ...(config?.isolated !== undefined ? { isolated: config.isolated } : {}),
           ...(deps.workflowId !== undefined ? { workflowId: deps.workflowId } : {}),

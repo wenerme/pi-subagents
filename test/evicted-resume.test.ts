@@ -106,9 +106,26 @@ describe("Agent({ resume }) once the live record is gone", () => {
     expect(type).toBe("Explore");
     expect(prompt).toBe("Now check the tests.");
     expect(options.resumeSessionFile).toBe(sessionFile);
+    expect(options.sessionFileExplicit).toBe(false);
     expect(options.agentId).toBe(id);
     expect((res as any).details.agentId).toBe(id);
     expect(textOf(res)).toContain("RESUMED-RUN");
+  });
+
+  it("reopens an evicted explicit lane using the persisted explicitness marker", async () => {
+    const branch: any[] = [];
+    settleWith("FIRST-RUN", sessionFile);
+    const first = boot(branch);
+    const res = await first.agent({ prompt: "Review the change.", session_file: sessionFile, run_in_background: false });
+    const id = (res as any).details.agentId;
+    await first.lifecycle.get("session_shutdown")?.();
+    delete (globalThis as any)[MANAGER_KEY];
+
+    settleWith("RESUMED-RUN", sessionFile);
+    const reopened = boot(branch);
+    await reopened.agent({ prompt: "Continue.", resume: id, run_in_background: false });
+    expect(vi.mocked(runAgent).mock.lastCall![3].resumeSessionFile).toBe(sessionFile);
+    expect(vi.mocked(runAgent).mock.lastCall![3].sessionFileExplicit).toBe(true);
   });
 
   it("reopens in the background and reports the same id", async () => {
@@ -122,6 +139,7 @@ describe("Agent({ resume }) once the live record is gone", () => {
     expect(textOf(res)).toContain("resumed from its saved session in background");
     expect(textOf(res)).toContain(`Agent ID: ${id}`);
     expect(vi.mocked(runAgent).mock.lastCall![3].resumeSessionFile).toBe(sessionFile);
+    expect(vi.mocked(runAgent).mock.lastCall![3].sessionFileExplicit).toBe(false);
   });
 
   it("reopens an agent the ten-minute cleanup evicted in this activation", async () => {
@@ -138,6 +156,7 @@ describe("Agent({ resume }) once the live record is gone", () => {
     const res = await agent({ prompt: "Continue.", resume: id, run_in_background: false });
 
     expect(vi.mocked(runAgent).mock.lastCall![3].resumeSessionFile).toBe(sessionFile);
+    expect(vi.mocked(runAgent).mock.lastCall![3].sessionFileExplicit).toBe(false);
     expect((res as any).details.agentId).toBe(id);
   });
 
@@ -390,6 +409,9 @@ describe("worktreeLost", () => {
   it("is saved in the record entry only when set", () => {
     const base = { id: "a", type: "Explore", description: "d", status: "completed", startedAt: 0 } as AgentRecord;
     expect(agentRecordEntryData(base)).not.toHaveProperty("worktreeLost", expect.anything());
+    expect(agentRecordEntryData(base).sessionFileExplicit).toBeUndefined();
+    expect(agentRecordEntryData({ ...base, sessionFileExplicit: false }).sessionFileExplicit).toBe(false);
+    expect(agentRecordEntryData({ ...base, sessionFileExplicit: true }).sessionFileExplicit).toBe(true);
     expect(agentRecordEntryData({ ...base, worktree: wt, worktreeResult: { hasChanges: true } }).worktreeLost).toBe(true);
   });
 });

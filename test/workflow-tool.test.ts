@@ -627,6 +627,31 @@ describe("createWorkflowHost — abort, resume and gate", () => {
     });
   });
 
+  it("keeps a saved workflow child non-explicit after its agent type gains session_file", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "workflow-session-file-"));
+    const sessionFile = join(directory, "saved.jsonl");
+    writeFileSync(sessionFile, '{"type":"session"}\n');
+    try {
+      const stub = stubManager(() => record({
+        id: "manager-id-7", sessionFile, sessionFileExplicit: false,
+      }));
+      const host = createWorkflowHost({ pi: {} as any, ctx: ctx(), manager: stub.manager });
+      await host.spawnAgent(request({ agentId: "wf-agent-0" }));
+      registerAgents(new Map([["general-purpose", {
+        name: "general-purpose", description: "updated", builtinToolNames: [], extensions: false,
+        skills: false, systemPrompt: "updated", promptMode: "replace", sessionFile: join(directory, "new-lane.jsonl"),
+      } as any]]));
+      stub.resume.mockResolvedValue(undefined);
+      await host.resumeAgent?.("wf-agent-0", "continue");
+      expect(stub.spawnAndWait.mock.calls[1][4]).toMatchObject({
+        resumeSessionFile: sessionFile,
+        sessionFileExplicit: false,
+      });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("refuses to resume an agent the run never spawned", async () => {
     const stub = stubManager();
     const host = createWorkflowHost({ pi: {} as any, ctx: ctx(), manager: stub.manager });

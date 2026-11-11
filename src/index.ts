@@ -684,6 +684,7 @@ export default function (pi: ExtensionAPI) {
     // conversation. Only the mention dispatcher may set it, and only from a
     // path this extension itself recorded — never from anything a caller sent.
     delete safeOptions.resumeSessionFile;
+    delete safeOptions.sessionFileExplicit;
     // Bypasses handle allocation, so a forged value would duplicate a live
     // agent's name and make `@handle` ambiguous. Same rule: dispatcher only.
     delete safeOptions.reclaim;
@@ -1004,6 +1005,7 @@ export default function (pi: ExtensionAPI) {
           description: entry.description,
           reclaim: { handle: entry.handle, alias: entry.alias },
           resumeSessionFile: entry.sessionFile,
+          sessionFileExplicit: entry.sessionFileExplicit === true,
           isBackground: true,
         });
         // The agent may still be starting — wait, so a startup failure lands in
@@ -1809,6 +1811,7 @@ Terse command-style prompts produce shallow, generic work.
           description: "Optional agent ID to resume from. Continues from previous context. Resumes detached like any other spawn; pass run_in_background: false to block and get the result inline. The resumed run gets a fresh max_turns budget. An agent can only be resumed once its current run has finished — use steer_subagent to reach one mid-run.",
         }),
       ),
+      session_file: Type.Optional(Type.String({ description: "Continue an explicit session file without forking it. Relative paths use the request working directory." })),
       isolated: Type.Optional(
         Type.Boolean({
           description: "If true, agent gets no extension/MCP tools — only built-in tools.",
@@ -1970,12 +1973,13 @@ Terse command-style prompts produce shallow, generic work.
         && manager.getRecord(callParams.resume) === undefined
         ? findAgentRecordEntry(ctx, callParams.resume)
         : undefined;
-      let reopenOptions: { resumeSessionFile: string; reclaim: { id: string; handle?: string; alias?: string } } | undefined;
+      let reopenOptions: { resumeSessionFile: string; sessionFileExplicit: boolean; reclaim: { id: string; handle?: string; alias?: string } } | undefined;
       if (saved !== undefined) {
         const reopen = reopenTarget(saved.type, saved.sessionFile, saved.worktreeLost);
         if (!reopen.ok) return textResult(`Agent "${saved.id}" cannot be resumed — ${reopen.reason}.`);
         reopenOptions = {
           resumeSessionFile: reopen.sessionFile,
+          sessionFileExplicit: saved.sessionFileExplicit === true,
           reclaim: { id: saved.id, handle: saved.handle, alias: saved.alias },
         };
       }
@@ -1987,6 +1991,7 @@ Terse command-style prompts produce shallow, generic work.
         max_turns: callParams.max_turns,
         isolation: undefined,
         schedule: undefined,
+        session_file: undefined,
       };
 
       const rawType = params.subagent_type as SubagentType;
@@ -2185,6 +2190,7 @@ Terse command-style prompts produce shallow, generic work.
             thinking: thinking,
             max_turns: effectiveMaxTurns,
             isolated: isolated,
+            session_file: params.session_file as string | undefined,
             isolation: isolation,
           });
           const next = scheduler.getNextRun(job.id);
@@ -2343,6 +2349,7 @@ Terse command-style prompts produce shallow, generic work.
           invocation: agentInvocation,
           rootSessionId: ctx.sessionManager.getSessionId(),
           ...reopenOptions,
+          sessionFile: params.session_file as string | undefined,
           ...bgCallbacks,
         });
 
@@ -2490,6 +2497,7 @@ Terse command-style prompts produce shallow, generic work.
           signal,
           rootSessionId: ctx.sessionManager.getSessionId(),
           ...reopenOptions,
+          sessionFile: params.session_file as string | undefined,
           // Deliberately does NOT set fgId: that drives agentActivity, the
           // widget and the `finally` cleanup below, none of which should see an
           // agent that has no session and may never get one.

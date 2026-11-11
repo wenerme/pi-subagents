@@ -37,6 +37,8 @@ export interface AgentRecordEntryData {
    * `persist_session: false`), which leaves nothing to come back to.
    */
   sessionFile?: string;
+  /** Whether the original spawn explicitly selected a session_file lane. */
+  sessionFileExplicit?: boolean;
   /** Names to give back to the reopened agent, as the `@handle` path does. */
   handle?: string;
   alias?: string;
@@ -69,6 +71,7 @@ export function agentRecordEntryData(record: AgentRecord): AgentRecordEntryData 
     startedAt: record.startedAt,
     completedAt: record.completedAt,
     sessionFile: record.sessionFile,
+    sessionFileExplicit: record.sessionFileExplicit,
     handle: record.handle,
     alias: record.alias,
     worktreeLost: worktreeLost(record) || undefined,

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -7,6 +7,7 @@ import { loadCustomAgents } from "../src/custom-agents.js";
 import { setScopeModelsEnabled } from "../src/model-scope.js";
 import { createNestedSubagentTools, getMaxSubagentDepth, type NestedAgentManager, setMaxSubagentDepth } from "../src/nested-tools.js";
 import { encodeCwd } from "../src/output-file.js";
+import { acquireSessionFileLock } from "../src/session-file-lock.js";
 
 let cwd: string;
 let manager: NestedAgentManager;
@@ -120,6 +121,59 @@ describe("child-safe nested Agent tools", () => {
     const [agent] = tools(["tracer"]);
     expect(agent.description).toContain("- tracer: Traces call sites. (Tools: read)");
     expect(agent.description).not.toContain("Use it for callers");
+  });
+
+  it("uses an agent file's session_file when the nested parameter is omitted", async () => {
+    const sessionFile = join(cwd, "nested-lane.jsonl");
+    writeAgent("lane-agent", `session_file: ${sessionFile}\n`);
+    registerAgents(loadCustomAgents(cwd));
+    const [agent] = tools();
+    await execute(agent, { subagent_type: "lane-agent", description: "use lane", prompt: "continue" });
+    expect(spawnAndWait).toHaveBeenCalledWith(
+      expect.anything(), expect.anything(), "lane-agent", "continue",
+      expect.objectContaining({ sessionFile, sessionFileExplicit: true }),
+      expect.any(Function),
+    );
+  });
+
+  it("uses the local registry lane when an omitted nested parameter conflicts with global config", async () => {
+    const laneB = join(cwd, "local-lane.jsonl");
+    const laneA = join(cwd, "global-lane.jsonl");
+    writeAgent("lane-agent", `session_file: ${laneB}\n`);
+    registerAgents(new Map([[
+      "lane-agent",
+      { name: "lane-agent", description: "global", builtinToolNames: [], extensions: false,
+        skills: false, systemPrompt: "global", promptMode: "replace", sessionFile: laneA } as any,
+    ]]));
+    spawnAndWait.mockImplementationOnce(async (_pi, _ctx, type, _prompt, options: any) => {
+      expect(options).toMatchObject({ sessionFile: laneB, sessionFileExplicit: true });
+      const release = await acquireSessionFileLock(options.sessionFile);
+      expect(existsSync(`${laneB}.lock`)).toBe(true);
+      expect(existsSync(`${laneA}.lock`)).toBe(false);
+      await release();
+      const record = { id: "child-local", type, status: "completed", result: "done", parentAgentId: options.parentAgentId };
+      records.set(record.id, record);
+      return { id: record.id, record };
+    });
+    const [agent] = tools();
+    await execute(agent, { subagent_type: "lane-agent", description: "use local lane", prompt: "continue" });
+    expect(spawnAndWait.mock.calls[0][4]).toMatchObject({ sessionFile: laneB, sessionFileExplicit: true });
+    expect(existsSync(`${laneA}.lock`)).toBe(false);
+  });
+
+  it("keeps a local agent without a lane from inheriting a same-name global lane", async () => {
+    const laneA = join(cwd, "global-lane.jsonl");
+    writeAgent("lane-agent");
+    registerAgents(new Map([[
+      "lane-agent",
+      { name: "lane-agent", description: "global", builtinToolNames: [], extensions: false,
+        skills: false, systemPrompt: "global", promptMode: "replace", sessionFile: laneA } as any,
+    ]]));
+    const [agent] = tools();
+    await execute(agent, { subagent_type: "lane-agent", description: "no lane", prompt: "continue" });
+    expect(spawnAndWait.mock.calls[0][4]).toMatchObject({ sessionFile: undefined, sessionFileExplicit: false });
+    expect(existsSync(`${laneA}.lock`)).toBe(false);
+    expect(existsSync(laneA)).toBe(false);
   });
 
   it("allows any enabled agent when allowed_subagents is omitted", async () => {

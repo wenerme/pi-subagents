@@ -66,6 +66,8 @@ export interface AgentConfig {
   model?: string;
   thinking?: ThinkingLevel;
   maxTurns?: number;
+  /** Explicit persistent session file; takes precedence over rememberAgents. */
+  sessionFile?: string;
   /** Persist this subagent as a normal pi session instead of keeping it in memory only. */
   persistSession?: boolean;
   /** Prompt-cache retention for this agent's model calls; overrides the `cacheRetention` setting. */
@@ -167,6 +169,7 @@ export interface AgentTombstone {
   description: string;
   /** Always set — a record with no session file is never tombstoned. */
   sessionFile: string;
+  sessionFileExplicit?: boolean;
   completedAt: number;
   /** The agent's work lived in a worktree that is now gone; reopening is refused. */
   worktreeLost?: boolean;
@@ -254,6 +257,8 @@ export interface AgentRecord {
   toolCallId?: string;
   /** Path to the streaming output transcript file. */
   outputFile?: string;
+  /** Whether sessionFile was explicitly requested, distinct from default remember persistence. */
+  sessionFileExplicit?: boolean;
   /**
    * The agent's pi session file, when it was persisted (`persist_session`, or
    * the `rememberAgents` default). Captured so a mention can reopen the
@@ -310,6 +315,8 @@ export interface AgentRecord {
   structuredRetried?: boolean;
   /** Parent agent ID for ownership-scoped nested controls. */
   parentAgentId?: string;
+  /** Parent pi session path captured at spawn for descendant lane protection. */
+  parentSessionFile?: string;
   /**
    * The workflow run that owns this child, when a workflow spawned it.
    *
@@ -412,6 +419,8 @@ export interface ScheduledSubagent {
   thinking?: ThinkingLevel;
   max_turns?: number;
   isolated?: boolean;
+  /** Explicit file path for every run of this scheduled job. */
+  session_file?: string;
   isolation?: IsolationMode;
 
   // state
@@ -419,7 +428,7 @@ export interface ScheduledSubagent {
   /** ISO timestamp. */
   createdAt: string;
   lastRun?: string;
-  lastStatus?: "success" | "error" | "running";
+  lastStatus?: "success" | "error" | "running" | "skipped";
   /** Refreshed on every fire and on store load. */
   nextRun?: string;
   runCount: number;

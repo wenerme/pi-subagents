@@ -197,6 +197,10 @@ interface SpawnOptions {
    * the type's CURRENT config.
    */
   resumeSessionFile?: string;
+  /** Explicit persistent lane requested by caller or schedule. */
+  sessionFile?: string;
+  /** Snapshot of whether this run was explicitly pinned to a session file. */
+  sessionFileExplicit?: boolean;
   /**
    * Take an evicted agent's names back verbatim instead of allocating fresh
    * ones, so a resumed conversation keeps the handle the user just typed —
@@ -634,6 +638,7 @@ export class AgentManager {
       invocation: options.invocation,
       depth: options.depth ?? 1,
       parentAgentId: options.parentAgentId,
+      parentSessionFile: ctx.sessionManager?.getSessionFile?.(),
       workflowId: options.workflowId,
       maxSubagentDepth: options.maxSubagentDepth,
       rootSessionId: options.rootSessionId,
@@ -643,6 +648,7 @@ export class AgentManager {
       // record and tombstone: without it, the next resume would be refused as
       // never saved.
       sessionFile: options.resumeSessionFile,
+      sessionFileExplicit: options.sessionFileExplicit ?? (options.sessionFile !== undefined || getAgentConfig(type)?.sessionFile !== undefined),
     };
     this.agents.set(id, record);
     // After the insert, so `takenHandles()` already counts this record's own
@@ -889,6 +895,17 @@ export class AgentManager {
     else this.armParentAbort(record, options.signal);
     const detach = () => this.detachParentAbort(record);
 
+    const reservedSessionFiles = new Set<string>();
+    let ancestorId = record.parentAgentId;
+    while (ancestorId !== undefined) {
+      const ancestor = this.agents.get(ancestorId);
+      if (!ancestor) break;
+      const ancestorFile = ancestor.session?.sessionManager?.getSessionFile?.() ?? ancestor.sessionFile;
+      if (ancestorFile) reservedSessionFiles.add(ancestorFile);
+      if (ancestor.parentSessionFile) reservedSessionFiles.add(ancestor.parentSessionFile);
+      ancestorId = ancestor.parentAgentId;
+    }
+
     const promise = runAgent(ctx, type, prompt, {
       pi,
       agentId: id,
@@ -900,6 +917,14 @@ export class AgentManager {
       structuredOutput: options.structuredOutput,
       disallowedTools: options.disallowedTools,
       resumeSessionFile: options.resumeSessionFile,
+      sessionFileCwd: customCwd ?? ctx.cwd,
+      sessionFile: options.sessionFileExplicit === false
+        ? undefined
+        : options.sessionFileExplicit === true && options.resumeSessionFile
+          ? options.resumeSessionFile
+          : options.sessionFile ?? getAgentConfig(type)?.sessionFile,
+      sessionFileExplicit: record.sessionFileExplicit,
+      reservedSessionFiles: [...reservedSessionFiles],
       nested: options.parentAgentId !== undefined,
       workflow: options.workflowId !== undefined,
       // Worktree wins for the working dir (the agent must run in the copy —
@@ -1732,6 +1757,7 @@ export class AgentManager {
       type: record.type,
       description: record.description,
       sessionFile: record.sessionFile,
+      sessionFileExplicit: record.sessionFileExplicit,
       completedAt: record.completedAt ?? Date.now(),
       worktreeLost: worktreeLost(record) || undefined,
     });

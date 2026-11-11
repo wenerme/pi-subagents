@@ -39,6 +39,7 @@ flowchart LR
 | Field | Type | Notes |
 |---|---|---|
 | `description` | string | What the agent is doing. Shown in the widget, FleetView and the completion notification |
+| `sessionFile` | string | Explicit pi session JSONL to append to. Relative paths resolve from the requested `cwd` (or the caller cwd); concurrent writers are serialized |
 | `name` | string | A memorable second handle (`@auth-audit`). Slugged, never validated — anything unusable degrades rather than failing the spawn |
 | `model` | `Model` **or** `"provider/modelId"` | Strings are resolved at the RPC boundary against `ctx.modelRegistry`. `null` means inherit, not override. Resolution is fuzzy — see [Model Scope](../README.md#model-scope) |
 | `maxTurns` | number | Turn ceiling for the run |
@@ -64,6 +65,7 @@ flowchart LR
 | `configCwd` | Config-discovery root; only nested launches may set it |
 | `rootSessionId` | Names a transcript directory, so a forged value is a path-traversal primitive |
 | `resumeSessionFile` | Worse: it names a file to **open and replay** as a conversation. Dispatcher only, and only from a path this extension itself recorded |
+| `sessionFileExplicit` | Internal persistence marker; callers cannot choose whether a session path was explicitly requested |
 | `reclaim` | Bypasses handle allocation, so a forged value would duplicate a live agent's name and make `@handle` ambiguous |
 | `blocking` | Every spawn through here is detached. A forged `blocking` would charge it to the foreground pool and defer it behind a queue whose gate nobody is holding |
 

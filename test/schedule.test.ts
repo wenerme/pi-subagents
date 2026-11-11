@@ -11,7 +11,7 @@
  */
 
 import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NO_FALLBACK, registerAgents, setFallbackSubagent } from "../src/agent-types.js";
@@ -114,6 +114,26 @@ describe("SubagentScheduler — lifecycle", () => {
   afterEach(() => {
     scheduler.stop();
     rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("skips an overlapping scheduled run when tilde and absolute paths share a lane", async () => {
+    let releaseRun!: () => void;
+    manager.getRecord.mockReturnValue({ promise: new Promise<void>(resolve => { releaseRun = resolve; }) });
+    const first = scheduler.addJob({
+      name: "lane-a", description: "lane", schedule: "1h", subagent_type: "general-purpose", prompt: "one",
+      session_file: "~/scheduler-lane.jsonl",
+    });
+    const second = scheduler.addJob({
+      name: "lane-b", description: "lane", schedule: "1h", subagent_type: "general-purpose", prompt: "two",
+      session_file: join(homedir(), "scheduler-lane.jsonl"),
+    });
+    const firstRun = (scheduler as any).executeJob(first.id) as Promise<void>;
+    await vi.waitFor(() => expect(manager.spawn).toHaveBeenCalledTimes(1));
+    await (scheduler as any).executeJob(second.id);
+    expect(store.get(second.id)?.lastStatus).toBe("skipped");
+    expect(manager.spawn).toHaveBeenCalledTimes(1);
+    releaseRun();
+    await firstRun;
   });
 
   it("isActive() reports start/stop state", () => {

@@ -20,9 +20,10 @@ import { Cron } from "croner";
 import { nanoid } from "nanoid";
 import type { AgentManager } from "./agent-manager.js";
 import { normalizeMaxTurns } from "./agent-runner.js";
-import { resolveSpawnType } from "./agent-types.js";
+import { getAgentConfig, resolveSpawnType } from "./agent-types.js";
 import { resolveModel } from "./model-resolver.js";
 import type { ScheduleStore } from "./schedule-store.js";
+import { resolveSessionFile } from "./session-file-lock.js";
 import type { IsolationMode, ScheduledSubagent, SubagentType, ThinkingLevel } from "./types.js";
 
 /** Event emitted on `pi.events` for cross-extension consumers. */
@@ -44,10 +45,12 @@ export interface NewJobInput {
   thinking?: ThinkingLevel;
   max_turns?: number;
   isolated?: boolean;
+  session_file?: string;
   isolation?: IsolationMode;
 }
 
 export class SubagentScheduler {
+  private activeLanes = new Set<string>();
   private jobs = new Map<string, Cron>();
   private intervals = new Map<string, NodeJS.Timeout>();
   private store: ScheduleStore | undefined;
@@ -107,6 +110,7 @@ export class SubagentScheduler {
       thinking: input.thinking,
       max_turns: input.max_turns,
       isolated: input.isolated,
+      session_file: input.session_file,
       isolation: input.isolation,
       enabled: true,
       createdAt: new Date().toISOString(),
@@ -217,7 +221,7 @@ export class SubagentScheduler {
    * queue), persist completion. Fire-and-forget: the timer tick returns
    * immediately so other jobs keep firing.
    */
-  private executeJob(id: string): void {
+  private async executeJob(id: string): Promise<void> {
     const store = this.store;
     const pi = this.pi;
     const ctx = this.ctx;
@@ -226,6 +230,23 @@ export class SubagentScheduler {
     const job = store.get(id);
     if (!job?.enabled) return;
 
+    const lanePath = job.session_file ?? getAgentConfig(job.subagent_type)?.sessionFile;
+    let laneKey: string | undefined;
+    if (lanePath) {
+      try {
+        laneKey = (await resolveSessionFile(lanePath, ctx.cwd)).key;
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        this.persist(id, { lastRun: new Date().toISOString(), lastStatus: "error" });
+        this.emit({ type: "error", jobId: id, error });
+        return;
+      }
+      if (this.activeLanes.has(laneKey)) {
+        this.persist(id, { lastRun: new Date().toISOString(), lastStatus: "skipped" });
+        return;
+      }
+      this.activeLanes.add(laneKey);
+    }
     this.persist(id, { lastStatus: "running" });
 
     // Resolve model at fire time — registry contents may have changed since the
@@ -254,6 +275,8 @@ export class SubagentScheduler {
         model: resolvedModel,
         maxTurns: job.max_turns,
         isolated: job.isolated,
+        sessionFile: job.session_file,
+        sessionFileExplicit: job.session_file === undefined ? undefined : true,
         thinkingLevel: job.thinking,
         isolation: job.isolation,
         // A scheduled run has no tool call to build this, so without it the
@@ -274,6 +297,7 @@ export class SubagentScheduler {
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
       this.persist(id, { lastRun: new Date().toISOString(), lastStatus: "error" });
+      if (laneKey) this.activeLanes.delete(laneKey);
       this.emit({ type: "error", jobId: id, error });
       return;
     }
@@ -289,6 +313,7 @@ export class SubagentScheduler {
         runCount: (current?.runCount ?? 0) + 1,
         nextRun: next,
       });
+      if (laneKey) this.activeLanes.delete(laneKey);
     };
 
     // AgentManager's promise resolves either way (its .catch returns ""), so we

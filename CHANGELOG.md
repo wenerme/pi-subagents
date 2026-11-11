@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Explicit `session_file` lanes append to one session without parent-mismatch forks and use a non-stealable writer lock.** Locks cover explicit lanes only; legacy record reopens and parent-mismatch forks follow pi's usual behavior and are not protected. Requests targeting the caller's or an ancestor's session are rejected. Session files with multiple hard links are refused; use a dedicated single-link file.
+
 ### Fixed
 - **Workflow children use the agent file as it is now** ([#483](https://github.com/tintinweb/pi-subagents/issues/483) — thanks [@woksin](https://github.com/woksin)). After an `agents/<name>.md` was edited mid-session, `SubagentWorkflow` children kept the definition loaded at session start, such as its old `model:`, until `/reload`, while `Agent` calls already used the new one. Each workflow run now reloads agent files when it starts.
 
